@@ -14,6 +14,12 @@ const placeOrderPaystack = async (req, res) => {
   try {
     const { userId, items, amount, address } = req.body;
 
+    if (!userId || !items || items.length === 0 || !amount || amount <= 0 || !address || !address.email) {
+      return res.status(400).json({ success: false, message: 'Invalid order data. Please provide userId, items, amount, and address with email.' });
+    }
+
+    console.log('Received order data:', { userId, items, amount, address });
+
     const orderData = {
       userId,
       items,
@@ -27,22 +33,32 @@ const placeOrderPaystack = async (req, res) => {
     const newOrder = new orderModel(orderData);
     await newOrder.save();
 
-    const response = await paystack.transaction.initialize({
-      amount: amount * 100, // Paystack expects amount in kobo
+    const paystackResponse = await paystack.transaction.initialize({
+      amount: Math.round(amount * 100), // Paystack expects amount in kobo
       email: address.email,
       reference: newOrder._id.toString(),
-      currency: currency
+      currency: currency,
+      metadata: { userId }
     });
 
-    if (response.status) {
-      res.json({ success: true, order: response.data });
+    console.log('Paystack initialize response:', paystackResponse);
+
+    if (paystackResponse.status) {
+      res.json({
+        success: true,
+        order: {
+          amount: amount, // Return amount in NGN (not kobo)
+          reference: newOrder._id.toString(),
+          authorization_url: paystackResponse.data.authorization_url
+        }
+      });
     } else {
       await orderModel.findByIdAndDelete(newOrder._id);
-      res.json({ success: false, message: response.message });
+      res.status(400).json({ success: false, message: paystackResponse.message || 'Failed to initialize Paystack transaction' });
     }
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    console.error('Error in placeOrderPaystack:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -51,17 +67,23 @@ const verifyPaystack = async (req, res) => {
   try {
     const { reference } = req.body;
 
+    if (!reference) {
+      return res.status(400).json({ success: false, message: 'Reference is required for verification' });
+    }
+
     const verification = await paystack.transaction.verify(reference);
+    console.log('Paystack verification response:', verification);
+
     if (verification.status && verification.data.status === 'success') {
-      await orderModel.findByIdAndUpdate(verification.data.reference, { payment: true });
+      await orderModel.findByIdAndUpdate(reference, { payment: true });
       await userModel.findByIdAndUpdate(verification.data.metadata.userId, { cartData: {} });
       res.json({ success: true, message: "Payment Successful" });
     } else {
       res.json({ success: false, message: 'Payment Failed' });
     }
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    console.error('Error in verifyPaystack:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -71,8 +93,8 @@ const allOrders = async (req, res) => {
     const orders = await orderModel.find({});
     res.json({ success: true, orders });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -83,8 +105,8 @@ const userOrders = async (req, res) => {
     const orders = await orderModel.find({ userId });
     res.json({ success: true, orders });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -95,8 +117,8 @@ const updateStatus = async (req, res) => {
     await orderModel.findByIdAndUpdate(orderId, { status });
     res.json({ success: true, message: 'Status Updated' });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
